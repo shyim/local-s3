@@ -2,6 +2,17 @@
 
 A lightweight, single-binary S3-compatible server for local development and testing. Objects are stored on the local filesystem, buckets and permissions are configured via environment variables, and a built-in web UI lets you browse and manage files.
 
+## Why not MinIO, RustFS, or Garage?
+
+Tools like [MinIO](https://min.io/), [RustFS](https://rustfs.com/), and [Garage](https://garagehq.deuxfleurs.fr/) are production-grade, distributed storage systems. They're great for running in staging or production, but come with significant overhead for local development:
+
+- **Complex setup** -- cluster configuration, distributed metadata, erasure coding, IAM policies
+- **Slow bootstrapping** -- getting a working setup with buckets and credentials takes time and configuration
+
+**local-s3** is purpose-built for the opposite use case: spin up a throwaway S3-compatible server in seconds for local development and testing. One binary, one environment variable, done. No cluster, no database, no configuration files. Pre-create buckets and accounts with env vars and tear it all down when you're finished.
+
+If you need production durability, replication, or scalability, use one of the above. If you need a quick S3 endpoint for your `docker-compose.yml` or CI pipeline, use this.
+
 ## Features
 
 - **S3-compatible API** with AWS Signature V4 authentication
