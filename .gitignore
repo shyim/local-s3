@@ -1,0 +1,5 @@
+local-s3
+tailwindcss-*
+data/
+/ui/*_templ.go
+/static/output.css
