@@ -1,6 +1,7 @@
 FROM node:22-alpine AS tailwind
 
 WORKDIR /app
+RUN npm install tailwindcss @tailwindcss/cli
 COPY static/input.css static/input.css
 COPY ui/templates.templ ui/templates.templ
 RUN npx @tailwindcss/cli -i static/input.css -o static/output.css --minify
