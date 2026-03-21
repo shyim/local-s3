@@ -1,4 +1,4 @@
-FROM node:24-alpine AS tailwind
+FROM --platform=$BUILDPLATFORM node:24-alpine AS tailwind
 
 WORKDIR /app
 RUN npm install tailwindcss @tailwindcss/cli
@@ -6,7 +6,10 @@ COPY static/input.css static/input.css
 COPY ui/templates.templ ui/templates.templ
 RUN npx @tailwindcss/cli -i static/input.css -o static/output.css --minify
 
-FROM golang:1.26-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
+
+ARG TARGETOS
+ARG TARGETARCH
 
 RUN go install github.com/a-h/templ/cmd/templ@latest
 
@@ -16,7 +19,7 @@ RUN go mod download
 COPY . .
 COPY --from=tailwind /app/static/output.css static/output.css
 RUN templ generate
-RUN CGO_ENABLED=0 go build -o /local-s3 .
+RUN CGO_ENABLED=0 GOOS=$TARGETOS GOARCH=$TARGETARCH go build -o /local-s3 .
 
 FROM alpine
 RUN apk add --no-cache ca-certificates
