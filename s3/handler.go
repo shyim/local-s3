@@ -24,8 +24,11 @@ func NewHandler(store *storage.Storage, accounts []auth.Account) *Handler {
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// Authenticate
+	// Authenticate via header or presigned URL
 	account := auth.VerifyRequest(h.accounts, r)
+	if account == nil && r.URL.Query().Has("X-Amz-Algorithm") {
+		account = auth.VerifyPresignedRequest(h.accounts, r)
+	}
 	if account == nil && len(h.accounts) > 0 {
 		writeErrorResponse(w, http.StatusForbidden, "AccessDenied", "Access Denied")
 		return

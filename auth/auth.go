@@ -8,6 +8,7 @@ import (
 	"net/http"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 	"time"
 )
@@ -264,6 +265,128 @@ func isUnreserved(c byte) bool {
 		(c >= 'a' && c <= 'z') ||
 		(c >= '0' && c <= '9') ||
 		c == '-' || c == '_' || c == '.' || c == '~'
+}
+
+// VerifyPresignedRequest verifies an AWS Signature V4 presigned URL request.
+// Returns the matching account or nil if auth fails.
+func VerifyPresignedRequest(accounts []Account, r *http.Request) *Account {
+	query := r.URL.Query()
+
+	algorithm := query.Get("X-Amz-Algorithm")
+	if algorithm != "AWS4-HMAC-SHA256" {
+		return nil
+	}
+
+	credentialStr := query.Get("X-Amz-Credential")
+	signedHeadersStr := query.Get("X-Amz-SignedHeaders")
+	signatureStr := query.Get("X-Amz-Signature")
+	amzDate := query.Get("X-Amz-Date")
+	expiresStr := query.Get("X-Amz-Expires")
+
+	if credentialStr == "" || signedHeadersStr == "" || signatureStr == "" || amzDate == "" || expiresStr == "" {
+		return nil
+	}
+
+	// Check expiration
+	expires, err := strconv.Atoi(expiresStr)
+	if err != nil || expires < 1 || expires > 604800 {
+		return nil
+	}
+
+	signTime, err := time.Parse("20060102T150405Z", amzDate)
+	if err != nil {
+		return nil
+	}
+
+	if time.Now().After(signTime.Add(time.Duration(expires) * time.Second)) {
+		return nil
+	}
+
+	// Parse credential: ACCESS_KEY/DATE/REGION/s3/aws4_request
+	credParts := strings.SplitN(credentialStr, "/", 5)
+	if len(credParts) != 5 {
+		return nil
+	}
+	accessKeyID := credParts[0]
+	dateStamp := credParts[1]
+	region := credParts[2]
+	service := credParts[3]
+
+	account := FindByAccessKey(accounts, accessKeyID)
+	if account == nil {
+		return nil
+	}
+
+	// Build canonical headers from signed headers
+	signedHeaders := strings.Split(signedHeadersStr, ";")
+	sort.Strings(signedHeaders)
+
+	canonicalHeaders := ""
+	for _, h := range signedHeaders {
+		val := ""
+		if strings.EqualFold(h, "host") {
+			val = r.Host
+		} else {
+			val = r.Header.Get(h)
+		}
+		canonicalHeaders += strings.ToLower(h) + ":" + strings.TrimSpace(val) + "\n"
+	}
+
+	// Build canonical query string excluding X-Amz-Signature
+	canonicalQueryString := buildPresignedCanonicalQueryString(r)
+
+	// For presigned URLs, the payload hash is always UNSIGNED-PAYLOAD
+	canonicalRequest := fmt.Sprintf("%s\n%s\n%s\n%s\n%s\n%s",
+		r.Method,
+		canonicalURI(r.URL.Path),
+		canonicalQueryString,
+		canonicalHeaders,
+		signedHeadersStr,
+		"UNSIGNED-PAYLOAD",
+	)
+
+	canonicalRequestHash := sha256Hex([]byte(canonicalRequest))
+
+	scope := fmt.Sprintf("%s/%s/%s/aws4_request", dateStamp, region, service)
+	stringToSign := fmt.Sprintf("AWS4-HMAC-SHA256\n%s\n%s\n%s",
+		amzDate,
+		scope,
+		canonicalRequestHash,
+	)
+
+	signingKey := deriveSigningKey(account.SecretAccessKey, dateStamp, region, service)
+	expectedSig := hex.EncodeToString(hmacSHA256(signingKey, []byte(stringToSign)))
+
+	if !hmac.Equal([]byte(expectedSig), []byte(signatureStr)) {
+		return nil
+	}
+
+	return account
+}
+
+// buildPresignedCanonicalQueryString builds the canonical query string for presigned URLs,
+// excluding the X-Amz-Signature parameter.
+func buildPresignedCanonicalQueryString(r *http.Request) string {
+	query := r.URL.Query()
+
+	var keys []string
+	for k := range query {
+		if k == "X-Amz-Signature" {
+			continue
+		}
+		keys = append(keys, k)
+	}
+	sort.Strings(keys)
+
+	var pairs []string
+	for _, k := range keys {
+		vals := query[k]
+		sort.Strings(vals)
+		for _, v := range vals {
+			pairs = append(pairs, uriEncode(k)+"="+uriEncode(v))
+		}
+	}
+	return strings.Join(pairs, "&")
 }
 
 // VerifyRequestForTime is like VerifyRequest but allows specifying a custom time

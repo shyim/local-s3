@@ -455,6 +455,120 @@ func TestReadOnlyAccount(t *testing.T) {
 	}
 }
 
+func TestPresignedGetObject(t *testing.T) {
+	client, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	ctx := context.TODO()
+
+	_, err := client.CreateBucket(ctx, &s3.CreateBucketInput{
+		Bucket: aws.String("test-bucket"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	content := []byte("presigned download content")
+	_, err = client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket: aws.String("test-bucket"),
+		Key:    aws.String("presigned-test.txt"),
+		Body:   bytes.NewReader(content),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Generate presigned GET URL
+	presignClient := s3.NewPresignClient(client)
+	presignResult, err := presignClient.PresignGetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String("test-bucket"),
+		Key:    aws.String("presigned-test.txt"),
+	})
+	if err != nil {
+		t.Fatalf("PresignGetObject failed: %v", err)
+	}
+
+	// Use plain HTTP client (no AWS auth) to fetch via presigned URL
+	resp, err := http.Get(presignResult.URL)
+	if err != nil {
+		t.Fatalf("HTTP GET presigned URL failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	body, err := io.ReadAll(resp.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !bytes.Equal(body, content) {
+		t.Fatalf("expected %q, got %q", content, body)
+	}
+}
+
+func TestPresignedPutObject(t *testing.T) {
+	client, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	ctx := context.TODO()
+
+	_, err := client.CreateBucket(ctx, &s3.CreateBucketInput{
+		Bucket: aws.String("test-bucket"),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Generate presigned PUT URL
+	presignClient := s3.NewPresignClient(client)
+	presignResult, err := presignClient.PresignPutObject(ctx, &s3.PutObjectInput{
+		Bucket: aws.String("test-bucket"),
+		Key:    aws.String("presigned-upload.txt"),
+	})
+	if err != nil {
+		t.Fatalf("PresignPutObject failed: %v", err)
+	}
+
+	// Use plain HTTP client to upload via presigned URL
+	content := []byte("presigned upload content")
+	req, err := http.NewRequest(http.MethodPut, presignResult.URL, bytes.NewReader(content))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		t.Fatalf("HTTP PUT presigned URL failed: %v", err)
+	}
+	defer resp.Body.Close()
+
+	if resp.StatusCode != http.StatusOK {
+		t.Fatalf("expected 200, got %d", resp.StatusCode)
+	}
+
+	// Verify the object was uploaded using the authenticated client
+	result, err := client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String("test-bucket"),
+		Key:    aws.String("presigned-upload.txt"),
+	})
+	if err != nil {
+		t.Fatalf("GetObject after presigned upload failed: %v", err)
+	}
+	defer result.Body.Close()
+
+	body, err := io.ReadAll(result.Body)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if !bytes.Equal(body, content) {
+		t.Fatalf("expected %q, got %q", content, body)
+	}
+}
+
 func TestBucketRestriction(t *testing.T) {
 	dataDir, err := os.MkdirTemp("", "s3-test-*")
 	if err != nil {
