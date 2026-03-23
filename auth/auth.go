@@ -317,7 +317,7 @@ func VerifyPresignedRequest(accounts []Account, r *http.Request) *Account {
 		return nil
 	}
 
-	// Build canonical headers from signed headers
+	// Build canonical request
 	signedHeaders := strings.Split(signedHeadersStr, ";")
 	sort.Strings(signedHeaders)
 
@@ -332,10 +332,8 @@ func VerifyPresignedRequest(accounts []Account, r *http.Request) *Account {
 		canonicalHeaders += strings.ToLower(h) + ":" + strings.TrimSpace(val) + "\n"
 	}
 
-	// Build canonical query string excluding X-Amz-Signature
 	canonicalQueryString := buildPresignedCanonicalQueryString(r)
 
-	// For presigned URLs, the payload hash is always UNSIGNED-PAYLOAD
 	canonicalRequest := fmt.Sprintf("%s\n%s\n%s\n%s\n%s\n%s",
 		r.Method,
 		canonicalURI(r.URL.Path),
@@ -364,8 +362,6 @@ func VerifyPresignedRequest(accounts []Account, r *http.Request) *Account {
 	return account
 }
 
-// buildPresignedCanonicalQueryString builds the canonical query string for presigned URLs,
-// excluding the X-Amz-Signature parameter.
 func buildPresignedCanonicalQueryString(r *http.Request) string {
 	query := r.URL.Query()
 

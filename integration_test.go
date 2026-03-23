@@ -17,6 +17,8 @@ import (
 	s3handler "github.com/shyim/local-s3/s3"
 	"github.com/shyim/local-s3/storage"
 	"github.com/shyim/local-s3/ui"
+	"github.com/stretchr/testify/assert"
+	"github.com/stretchr/testify/require"
 )
 
 const (
@@ -28,14 +30,10 @@ func setupTestServer(t *testing.T) (*s3.Client, func()) {
 	t.Helper()
 
 	dataDir, err := os.MkdirTemp("", "s3-test-*")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	store, err := storage.New(dataDir)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	accounts := []auth.Account{
 		{
@@ -50,9 +48,7 @@ func setupTestServer(t *testing.T) (*s3.Client, func()) {
 	mux.Handle("/", s3handler.NewHandler(store, accounts))
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	server := &http.Server{Handler: mux}
 	go server.Serve(listener)
@@ -63,9 +59,7 @@ func setupTestServer(t *testing.T) (*s3.Client, func()) {
 		config.WithRegion("us-east-1"),
 		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider(testAccessKey, testSecretKey, "")),
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
 		o.BaseEndpoint = aws.String(endpoint)
@@ -90,21 +84,13 @@ func TestCreateBucket(t *testing.T) {
 	_, err := client.CreateBucket(ctx, &s3.CreateBucketInput{
 		Bucket: aws.String("test-bucket"),
 	})
-	if err != nil {
-		t.Fatalf("CreateBucket failed: %v", err)
-	}
+	require.NoError(t, err)
 
 	result, err := client.ListBuckets(ctx, &s3.ListBucketsInput{})
-	if err != nil {
-		t.Fatalf("ListBuckets failed: %v", err)
-	}
+	require.NoError(t, err)
 
-	if len(result.Buckets) != 1 {
-		t.Fatalf("expected 1 bucket, got %d", len(result.Buckets))
-	}
-	if *result.Buckets[0].Name != "test-bucket" {
-		t.Fatalf("expected bucket name 'test-bucket', got '%s'", *result.Buckets[0].Name)
-	}
+	require.Len(t, result.Buckets, 1)
+	assert.Equal(t, "test-bucket", *result.Buckets[0].Name)
 }
 
 func TestHeadBucket(t *testing.T) {
@@ -116,23 +102,17 @@ func TestHeadBucket(t *testing.T) {
 	_, err := client.CreateBucket(ctx, &s3.CreateBucketInput{
 		Bucket: aws.String("test-bucket"),
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	_, err = client.HeadBucket(ctx, &s3.HeadBucketInput{
 		Bucket: aws.String("test-bucket"),
 	})
-	if err != nil {
-		t.Fatalf("HeadBucket failed: %v", err)
-	}
+	require.NoError(t, err)
 
 	_, err = client.HeadBucket(ctx, &s3.HeadBucketInput{
 		Bucket: aws.String("nonexistent"),
 	})
-	if err == nil {
-		t.Fatal("HeadBucket should fail for nonexistent bucket")
-	}
+	assert.Error(t, err)
 }
 
 func TestPutGetObject(t *testing.T) {
@@ -144,9 +124,7 @@ func TestPutGetObject(t *testing.T) {
 	_, err := client.CreateBucket(ctx, &s3.CreateBucketInput{
 		Bucket: aws.String("test-bucket"),
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	content := []byte("hello world")
 
@@ -155,27 +133,19 @@ func TestPutGetObject(t *testing.T) {
 		Key:    aws.String("test.txt"),
 		Body:   bytes.NewReader(content),
 	})
-	if err != nil {
-		t.Fatalf("PutObject failed: %v", err)
-	}
+	require.NoError(t, err)
 
 	result, err := client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String("test-bucket"),
 		Key:    aws.String("test.txt"),
 	})
-	if err != nil {
-		t.Fatalf("GetObject failed: %v", err)
-	}
+	require.NoError(t, err)
 	defer result.Body.Close()
 
 	body, err := io.ReadAll(result.Body)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
-	if !bytes.Equal(body, content) {
-		t.Fatalf("expected %q, got %q", content, body)
-	}
+	assert.Equal(t, content, body)
 }
 
 func TestHeadObject(t *testing.T) {
@@ -187,9 +157,7 @@ func TestHeadObject(t *testing.T) {
 	_, err := client.CreateBucket(ctx, &s3.CreateBucketInput{
 		Bucket: aws.String("test-bucket"),
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	content := []byte("hello")
 	_, err = client.PutObject(ctx, &s3.PutObjectInput{
@@ -197,21 +165,15 @@ func TestHeadObject(t *testing.T) {
 		Key:    aws.String("test.txt"),
 		Body:   bytes.NewReader(content),
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	head, err := client.HeadObject(ctx, &s3.HeadObjectInput{
 		Bucket: aws.String("test-bucket"),
 		Key:    aws.String("test.txt"),
 	})
-	if err != nil {
-		t.Fatalf("HeadObject failed: %v", err)
-	}
+	require.NoError(t, err)
 
-	if *head.ContentLength != int64(len(content)) {
-		t.Fatalf("expected content length %d, got %d", len(content), *head.ContentLength)
-	}
+	assert.Equal(t, int64(len(content)), *head.ContentLength)
 }
 
 func TestDeleteObject(t *testing.T) {
@@ -223,34 +185,26 @@ func TestDeleteObject(t *testing.T) {
 	_, err := client.CreateBucket(ctx, &s3.CreateBucketInput{
 		Bucket: aws.String("test-bucket"),
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	_, err = client.PutObject(ctx, &s3.PutObjectInput{
 		Bucket: aws.String("test-bucket"),
 		Key:    aws.String("test.txt"),
 		Body:   bytes.NewReader([]byte("hello")),
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	_, err = client.DeleteObject(ctx, &s3.DeleteObjectInput{
 		Bucket: aws.String("test-bucket"),
 		Key:    aws.String("test.txt"),
 	})
-	if err != nil {
-		t.Fatalf("DeleteObject failed: %v", err)
-	}
+	require.NoError(t, err)
 
 	_, err = client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String("test-bucket"),
 		Key:    aws.String("test.txt"),
 	})
-	if err == nil {
-		t.Fatal("GetObject should fail after delete")
-	}
+	assert.Error(t, err)
 }
 
 func TestListObjectsV2(t *testing.T) {
@@ -262,9 +216,7 @@ func TestListObjectsV2(t *testing.T) {
 	_, err := client.CreateBucket(ctx, &s3.CreateBucketInput{
 		Bucket: aws.String("test-bucket"),
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	files := map[string]string{
 		"docs/readme.txt":  "readme",
@@ -279,55 +231,33 @@ func TestListObjectsV2(t *testing.T) {
 			Key:    aws.String(key),
 			Body:   bytes.NewReader([]byte(content)),
 		})
-		if err != nil {
-			t.Fatal(err)
-		}
+		require.NoError(t, err)
 	}
 
 	// List all objects
 	result, err := client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
 		Bucket: aws.String("test-bucket"),
 	})
-	if err != nil {
-		t.Fatalf("ListObjectsV2 failed: %v", err)
-	}
-
-	if *result.KeyCount != int32(len(files)) {
-		t.Fatalf("expected %d objects, got %d", len(files), *result.KeyCount)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, int32(len(files)), *result.KeyCount)
 
 	// List with delimiter to get "folders"
 	result, err = client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
 		Bucket:    aws.String("test-bucket"),
 		Delimiter: aws.String("/"),
 	})
-	if err != nil {
-		t.Fatalf("ListObjectsV2 with delimiter failed: %v", err)
-	}
-
-	if len(result.CommonPrefixes) != 2 {
-		t.Fatalf("expected 2 common prefixes, got %d", len(result.CommonPrefixes))
-	}
-
-	if len(result.Contents) != 1 {
-		t.Fatalf("expected 1 root object, got %d", len(result.Contents))
-	}
-	if *result.Contents[0].Key != "root.txt" {
-		t.Fatalf("expected root object 'root.txt', got '%s'", *result.Contents[0].Key)
-	}
+	require.NoError(t, err)
+	assert.Len(t, result.CommonPrefixes, 2)
+	require.Len(t, result.Contents, 1)
+	assert.Equal(t, "root.txt", *result.Contents[0].Key)
 
 	// List with prefix
 	result, err = client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
 		Bucket: aws.String("test-bucket"),
 		Prefix: aws.String("docs/"),
 	})
-	if err != nil {
-		t.Fatalf("ListObjectsV2 with prefix failed: %v", err)
-	}
-
-	if *result.KeyCount != 2 {
-		t.Fatalf("expected 2 objects in docs/, got %d", *result.KeyCount)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, int32(2), *result.KeyCount)
 }
 
 func TestNestedObjects(t *testing.T) {
@@ -339,9 +269,7 @@ func TestNestedObjects(t *testing.T) {
 	_, err := client.CreateBucket(ctx, &s3.CreateBucketInput{
 		Bucket: aws.String("test-bucket"),
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	content := []byte("deeply nested content")
 	key := "a/b/c/d/deep.txt"
@@ -351,60 +279,40 @@ func TestNestedObjects(t *testing.T) {
 		Key:    aws.String(key),
 		Body:   bytes.NewReader(content),
 	})
-	if err != nil {
-		t.Fatalf("PutObject nested failed: %v", err)
-	}
+	require.NoError(t, err)
 
 	result, err := client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String("test-bucket"),
 		Key:    aws.String(key),
 	})
-	if err != nil {
-		t.Fatalf("GetObject nested failed: %v", err)
-	}
+	require.NoError(t, err)
 	defer result.Body.Close()
 
 	body, err := io.ReadAll(result.Body)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if !bytes.Equal(body, content) {
-		t.Fatalf("expected %q, got %q", content, body)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, content, body)
 
 	// Delete should clean up empty parent dirs
 	_, err = client.DeleteObject(ctx, &s3.DeleteObjectInput{
 		Bucket: aws.String("test-bucket"),
 		Key:    aws.String(key),
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	list, err := client.ListObjectsV2(ctx, &s3.ListObjectsV2Input{
 		Bucket: aws.String("test-bucket"),
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if *list.KeyCount != 0 {
-		t.Fatalf("expected 0 objects after delete, got %d", *list.KeyCount)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, int32(0), *list.KeyCount)
 }
 
 func TestReadOnlyAccount(t *testing.T) {
 	dataDir, err := os.MkdirTemp("", "s3-test-*")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer os.RemoveAll(dataDir)
 
 	store, err := storage.New(dataDir)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	store.EnsureBucket("test-bucket")
 
 	accounts := []auth.Account{
@@ -421,9 +329,7 @@ func TestReadOnlyAccount(t *testing.T) {
 	mux.Handle("/", s3handler.NewHandler(store, accounts))
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer listener.Close()
 
 	server := &http.Server{Handler: mux}
@@ -434,9 +340,7 @@ func TestReadOnlyAccount(t *testing.T) {
 		config.WithRegion("us-east-1"),
 		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider("rokey", "rosecret", "")),
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
 		o.BaseEndpoint = aws.String("http://" + listener.Addr().String())
@@ -450,9 +354,7 @@ func TestReadOnlyAccount(t *testing.T) {
 		Key:    aws.String("test.txt"),
 		Body:   bytes.NewReader([]byte("hello")),
 	})
-	if err == nil {
-		t.Fatal("PutObject should fail for read-only account")
-	}
+	assert.Error(t, err)
 }
 
 func TestPresignedGetObject(t *testing.T) {
@@ -464,9 +366,7 @@ func TestPresignedGetObject(t *testing.T) {
 	_, err := client.CreateBucket(ctx, &s3.CreateBucketInput{
 		Bucket: aws.String("test-bucket"),
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	content := []byte("presigned download content")
 	_, err = client.PutObject(ctx, &s3.PutObjectInput{
@@ -474,39 +374,24 @@ func TestPresignedGetObject(t *testing.T) {
 		Key:    aws.String("presigned-test.txt"),
 		Body:   bytes.NewReader(content),
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
-	// Generate presigned GET URL
 	presignClient := s3.NewPresignClient(client)
 	presignResult, err := presignClient.PresignGetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String("test-bucket"),
 		Key:    aws.String("presigned-test.txt"),
 	})
-	if err != nil {
-		t.Fatalf("PresignGetObject failed: %v", err)
-	}
+	require.NoError(t, err)
 
-	// Use plain HTTP client (no AWS auth) to fetch via presigned URL
 	resp, err := http.Get(presignResult.URL)
-	if err != nil {
-		t.Fatalf("HTTP GET presigned URL failed: %v", err)
-	}
+	require.NoError(t, err)
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200, got %d", resp.StatusCode)
-	}
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
 	body, err := io.ReadAll(resp.Body)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if !bytes.Equal(body, content) {
-		t.Fatalf("expected %q, got %q", content, body)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, content, body)
 }
 
 func TestPresignedPutObject(t *testing.T) {
@@ -518,68 +403,44 @@ func TestPresignedPutObject(t *testing.T) {
 	_, err := client.CreateBucket(ctx, &s3.CreateBucketInput{
 		Bucket: aws.String("test-bucket"),
 	})
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
-	// Generate presigned PUT URL
 	presignClient := s3.NewPresignClient(client)
 	presignResult, err := presignClient.PresignPutObject(ctx, &s3.PutObjectInput{
 		Bucket: aws.String("test-bucket"),
 		Key:    aws.String("presigned-upload.txt"),
 	})
-	if err != nil {
-		t.Fatalf("PresignPutObject failed: %v", err)
-	}
+	require.NoError(t, err)
 
-	// Use plain HTTP client to upload via presigned URL
 	content := []byte("presigned upload content")
 	req, err := http.NewRequest(http.MethodPut, presignResult.URL, bytes.NewReader(content))
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	resp, err := http.DefaultClient.Do(req)
-	if err != nil {
-		t.Fatalf("HTTP PUT presigned URL failed: %v", err)
-	}
+	require.NoError(t, err)
 	defer resp.Body.Close()
 
-	if resp.StatusCode != http.StatusOK {
-		t.Fatalf("expected 200, got %d", resp.StatusCode)
-	}
+	assert.Equal(t, http.StatusOK, resp.StatusCode)
 
-	// Verify the object was uploaded using the authenticated client
 	result, err := client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String("test-bucket"),
 		Key:    aws.String("presigned-upload.txt"),
 	})
-	if err != nil {
-		t.Fatalf("GetObject after presigned upload failed: %v", err)
-	}
+	require.NoError(t, err)
 	defer result.Body.Close()
 
 	body, err := io.ReadAll(result.Body)
-	if err != nil {
-		t.Fatal(err)
-	}
-
-	if !bytes.Equal(body, content) {
-		t.Fatalf("expected %q, got %q", content, body)
-	}
+	require.NoError(t, err)
+	assert.Equal(t, content, body)
 }
 
 func TestBucketRestriction(t *testing.T) {
 	dataDir, err := os.MkdirTemp("", "s3-test-*")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer os.RemoveAll(dataDir)
 
 	store, err := storage.New(dataDir)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	store.EnsureBucket("allowed-bucket")
 	store.EnsureBucket("forbidden-bucket")
 
@@ -597,9 +458,7 @@ func TestBucketRestriction(t *testing.T) {
 	mux.Handle("/", s3handler.NewHandler(store, accounts))
 
 	listener, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 	defer listener.Close()
 
 	server := &http.Server{Handler: mux}
@@ -610,9 +469,7 @@ func TestBucketRestriction(t *testing.T) {
 		config.WithRegion("us-east-1"),
 		config.WithCredentialsProvider(credentials.NewStaticCredentialsProvider("rkey", "rsecret", "")),
 	)
-	if err != nil {
-		t.Fatal(err)
-	}
+	require.NoError(t, err)
 
 	client := s3.NewFromConfig(cfg, func(o *s3.Options) {
 		o.BaseEndpoint = aws.String("http://" + listener.Addr().String())
@@ -625,28 +482,18 @@ func TestBucketRestriction(t *testing.T) {
 	_, err = client.HeadBucket(ctx, &s3.HeadBucketInput{
 		Bucket: aws.String("allowed-bucket"),
 	})
-	if err != nil {
-		t.Fatalf("HeadBucket on allowed bucket failed: %v", err)
-	}
+	require.NoError(t, err)
 
 	// Forbidden bucket should fail
 	_, err = client.HeadBucket(ctx, &s3.HeadBucketInput{
 		Bucket: aws.String("forbidden-bucket"),
 	})
-	if err == nil {
-		t.Fatal("HeadBucket should fail for forbidden bucket")
-	}
+	assert.Error(t, err)
 
 	// ListBuckets should only return allowed bucket
 	result, err := client.ListBuckets(ctx, &s3.ListBucketsInput{})
-	if err != nil {
-		t.Fatalf("ListBuckets failed: %v", err)
-	}
+	require.NoError(t, err)
 
-	if len(result.Buckets) != 1 {
-		t.Fatalf("expected 1 bucket, got %d", len(result.Buckets))
-	}
-	if *result.Buckets[0].Name != "allowed-bucket" {
-		t.Fatalf("expected 'allowed-bucket', got '%s'", *result.Buckets[0].Name)
-	}
+	require.Len(t, result.Buckets, 1)
+	assert.Equal(t, "allowed-bucket", *result.Buckets[0].Name)
 }

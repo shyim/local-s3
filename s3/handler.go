@@ -24,7 +24,7 @@ func NewHandler(store *storage.Storage, accounts []auth.Account) *Handler {
 }
 
 func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	// Authenticate via header or presigned URL
+	// Authenticate
 	account := auth.VerifyRequest(h.accounts, r)
 	if account == nil && r.URL.Query().Has("X-Amz-Algorithm") {
 		account = auth.VerifyPresignedRequest(h.accounts, r)
