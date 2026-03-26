@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net"
 	"net/http"
@@ -13,6 +14,7 @@ import (
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/smithy-go"
 	"github.com/shyim/local-s3/auth"
 	s3handler "github.com/shyim/local-s3/s3"
 	"github.com/shyim/local-s3/storage"
@@ -73,6 +75,16 @@ func setupTestServer(t *testing.T) (*s3.Client, func()) {
 	}
 
 	return client, cleanup
+}
+
+func assertAPIErrorCode(t *testing.T, err error, code string) {
+	t.Helper()
+
+	require.Error(t, err)
+
+	var apiErr smithy.APIError
+	require.True(t, errors.As(err, &apiErr), "expected smithy API error, got %T", err)
+	assert.Equal(t, code, apiErr.ErrorCode())
 }
 
 func TestCreateBucket(t *testing.T) {
@@ -146,6 +158,37 @@ func TestPutGetObject(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, content, body)
+}
+
+func TestGetObjectMissingKey(t *testing.T) {
+	client, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	ctx := context.TODO()
+
+	_, err := client.CreateBucket(ctx, &s3.CreateBucketInput{
+		Bucket: aws.String("test-bucket"),
+	})
+	require.NoError(t, err)
+
+	_, err = client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String("test-bucket"),
+		Key:    aws.String("missing.txt"),
+	})
+	assertAPIErrorCode(t, err, "NoSuchKey")
+}
+
+func TestGetObjectMissingBucket(t *testing.T) {
+	client, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	ctx := context.TODO()
+
+	_, err := client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String("missing-bucket"),
+		Key:    aws.String("test.txt"),
+	})
+	assertAPIErrorCode(t, err, "NoSuchBucket")
 }
 
 func TestHeadObject(t *testing.T) {
