@@ -11,15 +11,20 @@ jobs:
     runs-on: ubuntu-latest
 
     steps:
-      - uses: actions/checkout@v6
+      - uses: actions/checkout@v7
 
-      - uses: actions/setup-go@v6
+      - uses: actions/setup-go@v7
         with:
           go-version-file: go.mod
 
       - run: go install github.com/a-h/templ/cmd/templ@$(go list -m -f '{{.Version}}' github.com/a-h/templ)
 
-      - run: npm install
+      - uses: actions/setup-node@v7
+        with:
+          node-version: '26'
+          cache: npm
+
+      - run: npm ci
       - run: npx @tailwindcss/cli -i static/input.css -o static/output.css --minify
 
       - run: templ generate

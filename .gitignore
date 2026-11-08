@@ -1,4 +1,5 @@
 local-s3
+node_modules/
 tailwindcss-*
 data/
 /ui/*_templ.go
