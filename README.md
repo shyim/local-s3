@@ -64,6 +64,7 @@ All configuration is done through environment variables or CLI flags.
 |---|---|---|---|
 | `S3_LISTEN_ADDR` | `-addr` | `:9000` | Listen address |
 | `S3_DATA_DIR` | `-data` | `./data` | Directory for stored objects |
+| `S3_BUCKETS` | - | - | Comma-separated buckets to create on startup |
 
 ### Accounts
 
