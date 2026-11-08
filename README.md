@@ -26,7 +26,7 @@ If you need production durability, replication, or scalability, use one of the a
 ### Prerequisites
 
 - Go 1.22+
-- [templ](https://templ.guide/) (`go install github.com/a-h/templ/cmd/templ@latest`)
+- [templ](https://templ.guide/) (from the repository directory, run `go install github.com/a-h/templ/cmd/templ@$(go list -m -f '{{.Version}}' github.com/a-h/templ)` to match the version in `go.mod`)
 
 ### Run locally
 

@@ -11,11 +11,10 @@ FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
 ARG TARGETOS
 ARG TARGETARCH
 
-RUN go install github.com/a-h/templ/cmd/templ@latest
-
 WORKDIR /app
 COPY go.mod go.sum ./
 RUN go mod download
+RUN go install github.com/a-h/templ/cmd/templ@$(go list -m -f '{{.Version}}' github.com/a-h/templ)
 COPY . .
 COPY --from=tailwind /app/static/output.css static/output.css
 RUN templ generate
