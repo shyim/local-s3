@@ -25,7 +25,8 @@ If you need production durability, replication, or scalability, use one of the a
 
 ### Prerequisites
 
-- Go 1.22+
+- Go 1.27.3+
+- Node.js 26+ (run `npm ci` to install frontend build dependencies)
 - [templ](https://templ.guide/) (from the repository directory, run `go install github.com/a-h/templ/cmd/templ@$(go list -m -f '{{.Version}}' github.com/a-h/templ)` to match the version in `go.mod`)
 
 ### Run locally

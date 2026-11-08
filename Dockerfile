@@ -1,12 +1,13 @@
-FROM --platform=$BUILDPLATFORM node:24-alpine AS tailwind
+FROM --platform=$BUILDPLATFORM node:26-alpine AS tailwind
 
 WORKDIR /app
-RUN npm install tailwindcss @tailwindcss/cli
+COPY package.json package-lock.json ./
+RUN npm ci
 COPY static/input.css static/input.css
 COPY ui/templates.templ ui/templates.templ
 RUN npx @tailwindcss/cli -i static/input.css -o static/output.css --minify
 
-FROM --platform=$BUILDPLATFORM golang:1.26-alpine AS builder
+FROM --platform=$BUILDPLATFORM golang:1.27-alpine AS builder
 
 ARG TARGETOS
 ARG TARGETARCH
