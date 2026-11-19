@@ -16,7 +16,7 @@ import (
 type Account struct {
 	Name            string
 	AccessKeyID     string
-	SecretAccessKey  string
+	SecretAccessKey string
 	Buckets         []string // empty = access to all buckets
 	ReadOnly        bool
 }
@@ -53,8 +53,8 @@ func LoadFromEnv() []Account {
 		}
 
 		account := Account{
-			Name:           name,
-			AccessKeyID:    credParts[0],
+			Name:            name,
+			AccessKeyID:     credParts[0],
 			SecretAccessKey: credParts[1],
 		}
 

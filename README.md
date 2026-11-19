@@ -113,6 +113,7 @@ If no accounts are configured, the server allows unauthenticated access.
 | GetObject | `GET /<bucket>/<key>` | |
 | HeadObject | `HEAD /<bucket>/<key>` | |
 | DeleteObject | `DELETE /<bucket>/<key>` | |
+| DeleteObjects | `POST /<bucket>?delete` | |
 | Presigned GetObject | `GET /<bucket>/<key>?X-Amz-Algorithm=...` | |
 | Presigned PutObject | `PUT /<bucket>/<key>?X-Amz-Algorithm=...` | |
 

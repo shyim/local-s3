@@ -7,13 +7,16 @@ import (
 	"io"
 	"net"
 	"net/http"
+	"net/http/httptest"
 	"os"
+	"strings"
 	"testing"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/credentials"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
 	"github.com/shyim/local-s3/auth"
 	s3handler "github.com/shyim/local-s3/s3"
@@ -39,8 +42,8 @@ func setupTestServer(t *testing.T) (*s3.Client, func()) {
 
 	accounts := []auth.Account{
 		{
-			Name:           "test",
-			AccessKeyID:    testAccessKey,
+			Name:            "test",
+			AccessKeyID:     testAccessKey,
 			SecretAccessKey: testSecretKey,
 		},
 	}
@@ -250,6 +253,137 @@ func TestDeleteObject(t *testing.T) {
 	assert.Error(t, err)
 }
 
+func TestDeleteObjects(t *testing.T) {
+	client, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	ctx := context.TODO()
+	_, err := client.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: aws.String("test-bucket")})
+	require.NoError(t, err)
+
+	for _, key := range []string{"first.txt", "second.txt", "keep.txt"} {
+		_, err := client.PutObject(ctx, &s3.PutObjectInput{
+			Bucket: aws.String("test-bucket"),
+			Key:    aws.String(key),
+			Body:   bytes.NewReader([]byte("hello")),
+		})
+		require.NoError(t, err)
+	}
+
+	result, err := client.DeleteObjects(ctx, &s3.DeleteObjectsInput{
+		Bucket: aws.String("test-bucket"),
+		Delete: &types.Delete{Objects: []types.ObjectIdentifier{
+			{Key: aws.String("first.txt")},
+			{Key: aws.String("second.txt")},
+			{Key: aws.String("missing.txt")},
+		}},
+	})
+	require.NoError(t, err)
+	require.Len(t, result.Deleted, 3)
+	assert.ElementsMatch(t, []string{"first.txt", "second.txt", "missing.txt"}, []string{
+		aws.ToString(result.Deleted[0].Key),
+		aws.ToString(result.Deleted[1].Key),
+		aws.ToString(result.Deleted[2].Key),
+	})
+	assert.Empty(t, result.Errors)
+
+	for _, key := range []string{"first.txt", "second.txt"} {
+		_, err := client.GetObject(ctx, &s3.GetObjectInput{
+			Bucket: aws.String("test-bucket"),
+			Key:    aws.String(key),
+		})
+		assert.Error(t, err)
+	}
+	object, err := client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String("test-bucket"),
+		Key:    aws.String("keep.txt"),
+	})
+	require.NoError(t, err)
+	object.Body.Close()
+}
+
+func TestDeleteObjectsQuiet(t *testing.T) {
+	client, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	ctx := context.TODO()
+	_, err := client.CreateBucket(ctx, &s3.CreateBucketInput{Bucket: aws.String("test-bucket")})
+	require.NoError(t, err)
+	_, err = client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket: aws.String("test-bucket"),
+		Key:    aws.String("test.txt"),
+		Body:   bytes.NewReader([]byte("hello")),
+	})
+	require.NoError(t, err)
+
+	result, err := client.DeleteObjects(ctx, &s3.DeleteObjectsInput{
+		Bucket: aws.String("test-bucket"),
+		Delete: &types.Delete{Quiet: aws.Bool(true), Objects: []types.ObjectIdentifier{
+			{Key: aws.String("test.txt")},
+		}},
+	})
+	require.NoError(t, err)
+	assert.Empty(t, result.Deleted)
+	assert.Empty(t, result.Errors)
+
+	_, err = client.GetObject(ctx, &s3.GetObjectInput{
+		Bucket: aws.String("test-bucket"),
+		Key:    aws.String("test.txt"),
+	})
+	assert.Error(t, err)
+}
+
+func TestDeleteObjectsMissingBucket(t *testing.T) {
+	client, cleanup := setupTestServer(t)
+	defer cleanup()
+
+	_, err := client.DeleteObjects(context.TODO(), &s3.DeleteObjectsInput{
+		Bucket: aws.String("missing-bucket"),
+		Delete: &types.Delete{Objects: []types.ObjectIdentifier{{Key: aws.String("test.txt")}}},
+	})
+	assertAPIErrorCode(t, err, "NoSuchBucket")
+}
+
+func TestDeleteObjectsRejectsMalformedAndUnsafeKeys(t *testing.T) {
+	store, err := storage.New(t.TempDir())
+	require.NoError(t, err)
+	require.NoError(t, store.EnsureBucket("test-bucket"))
+	require.NoError(t, store.EnsureBucket("empty-bucket"))
+	_, err = store.PutObject("test-bucket", "keep.txt", bytes.NewReader([]byte("keep")))
+	require.NoError(t, err)
+	outsidePath := store.ObjectPath("test-bucket", "../outside.txt")
+	require.NoError(t, os.WriteFile(outsidePath, []byte("outside"), 0o600))
+	handler := s3handler.NewHandler(store, nil)
+
+	tooManyKeys := `<Delete><Object><Key>keep.txt</Key></Object>` +
+		strings.Repeat(`<Object><Key>extra.txt</Key></Object>`, 1000) + `</Delete>`
+	for _, tc := range []struct {
+		path   string
+		body   string
+		code   string
+		status int
+	}{
+		{"/test-bucket?delete", `<Wrong><Object><Key>keep.txt</Key></Object></Wrong>`, "MalformedXML", http.StatusBadRequest},
+		{"/empty-bucket?delete", `<Delete><Object/></Delete>`, "MalformedXML", http.StatusBadRequest},
+		{"/test-bucket?delete", `<Delete/>`, "MalformedXML", http.StatusBadRequest},
+		{"/test-bucket?delete", tooManyKeys, "InvalidRequest", http.StatusBadRequest},
+		{"/test-bucket?delete", `<Delete><Object><Key>../outside.txt</Key></Object></Delete>`, "InvalidArgument", http.StatusOK},
+	} {
+		request := httptest.NewRequest(http.MethodPost, tc.path, strings.NewReader(tc.body))
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, request)
+
+		assert.Equal(t, tc.status, response.Code)
+		assert.Contains(t, response.Body.String(), tc.code)
+	}
+	_, err = store.HeadObject("test-bucket", "keep.txt")
+	assert.NoError(t, err)
+	assert.True(t, store.BucketExists("empty-bucket"))
+	content, err := os.ReadFile(outsidePath)
+	require.NoError(t, err)
+	assert.Equal(t, "outside", string(content))
+}
+
 func TestListObjectsV2(t *testing.T) {
 	client, cleanup := setupTestServer(t)
 	defer cleanup()
@@ -360,10 +494,10 @@ func TestReadOnlyAccount(t *testing.T) {
 
 	accounts := []auth.Account{
 		{
-			Name:           "readonly",
-			AccessKeyID:    "rokey",
+			Name:            "readonly",
+			AccessKeyID:     "rokey",
 			SecretAccessKey: "rosecret",
-			ReadOnly:       true,
+			ReadOnly:        true,
 		},
 	}
 
@@ -489,10 +623,10 @@ func TestBucketRestriction(t *testing.T) {
 
 	accounts := []auth.Account{
 		{
-			Name:           "restricted",
-			AccessKeyID:    "rkey",
+			Name:            "restricted",
+			AccessKeyID:     "rkey",
 			SecretAccessKey: "rsecret",
-			Buckets:        []string{"allowed-bucket"},
+			Buckets:         []string{"allowed-bucket"},
 		},
 	}
 
