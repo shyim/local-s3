@@ -109,9 +109,11 @@ func VerifyRequest(accounts []Account, r *http.Request) *Account {
 		return nil
 	}
 
-	// Parse: AWS4-HMAC-SHA256 Credential=KEY/DATE/REGION/s3/aws4_request, SignedHeaders=..., Signature=...
+	// Parse: AWS4-HMAC-SHA256 Credential=KEY/DATE/REGION/s3/aws4_request,SignedHeaders=...,Signature=...
+	// Note: some clients (e.g. ExAws) do not put a space after the comma,
+	// so split on "," and trim each part.
 	authContent := authHeader[len("AWS4-HMAC-SHA256 "):]
-	parts := strings.Split(authContent, ", ")
+	parts := strings.Split(authContent, ",")
 	if len(parts) != 3 {
 		return nil
 	}
