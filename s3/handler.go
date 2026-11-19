@@ -6,6 +6,7 @@ import (
 	"io"
 	"log"
 	"net/http"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"time"
@@ -71,6 +72,13 @@ func (h *Handler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 			h.handleHeadBucket(w, r, bucket)
 		case http.MethodPut:
 			h.handleCreateBucket(w, r, account, bucket)
+		case http.MethodPost:
+			if r.URL.Query().Has("delete") {
+				h.handleDeleteObjects(w, r, account, bucket)
+				return
+			}
+			// Reuse the default method-not-allowed response.
+			fallthrough
 		default:
 			writeErrorResponse(w, http.StatusMethodNotAllowed, "MethodNotAllowed", "Method not allowed")
 		}
@@ -369,6 +377,122 @@ func (h *Handler) handleDeleteObject(w http.ResponseWriter, _ *http.Request, acc
 		return
 	}
 	w.WriteHeader(http.StatusNoContent)
+}
+
+func (h *Handler) handleDeleteObjects(w http.ResponseWriter, r *http.Request, account *auth.Account, bucket string) {
+	if account != nil && !account.CanWrite() {
+		writeErrorResponse(w, http.StatusForbidden, "AccessDenied", "Write access denied")
+		return
+	}
+
+	if !h.store.BucketExists(bucket) {
+		writeErrorResponse(w, http.StatusNotFound, "NoSuchBucket", "The specified bucket does not exist")
+		return
+	}
+
+	type deleteObject struct {
+		Key string `xml:"Key"`
+	}
+	malformedXML := func() {
+		writeErrorResponse(w, http.StatusBadRequest, "MalformedXML", "The XML you provided was not well-formed or did not validate against our published schema")
+	}
+	var objects []deleteObject
+	quiet := false
+	decoder := xml.NewDecoder(r.Body)
+	var root xml.StartElement
+	for {
+		token, err := decoder.Token()
+		if err != nil {
+			malformedXML()
+			return
+		}
+		if start, ok := token.(xml.StartElement); ok {
+			root = start
+			break
+		}
+	}
+	if root.Name.Local != "Delete" {
+		malformedXML()
+		return
+	}
+
+parse:
+	for {
+		token, err := decoder.Token()
+		if err != nil {
+			malformedXML()
+			return
+		}
+		switch token := token.(type) {
+		case xml.StartElement:
+			switch token.Name.Local {
+			case "Object":
+				if len(objects) >= 1000 {
+					writeErrorResponse(w, http.StatusBadRequest, "InvalidRequest", "You can't delete more than 1000 objects in a single request")
+					return
+				}
+				var object deleteObject
+				if err := decoder.DecodeElement(&object, &token); err != nil {
+					malformedXML()
+					return
+				}
+				if object.Key == "" {
+					malformedXML()
+					return
+				}
+				objects = append(objects, object)
+			case "Quiet":
+				if err := decoder.DecodeElement(&quiet, &token); err != nil {
+					malformedXML()
+					return
+				}
+			default:
+				if err := decoder.Skip(); err != nil {
+					malformedXML()
+					return
+				}
+			}
+		case xml.EndElement:
+			if token.Name == root.Name {
+				break parse
+			}
+		}
+	}
+	if len(objects) == 0 {
+		malformedXML()
+		return
+	}
+
+	type deletedObject struct {
+		Key string `xml:"Key"`
+	}
+	type deleteError struct {
+		Key     string `xml:"Key"`
+		Code    string `xml:"Code"`
+		Message string `xml:"Message"`
+	}
+	var response struct {
+		XMLName xml.Name        `xml:"DeleteResult"`
+		Xmlns   string          `xml:"xmlns,attr"`
+		Deleted []deletedObject `xml:"Deleted,omitempty"`
+		Errors  []deleteError   `xml:"Error,omitempty"`
+	}
+	response.Xmlns = "http://s3.amazonaws.com/doc/2006-03-01/"
+
+	for _, object := range objects {
+		relativePath, err := filepath.Rel(h.store.BucketPath(bucket), h.store.ObjectPath(bucket, object.Key))
+		if err != nil || relativePath == "." || !filepath.IsLocal(relativePath) {
+			response.Errors = append(response.Errors, deleteError{Key: object.Key, Code: "InvalidArgument", Message: "The object key is outside the bucket"})
+			continue
+		}
+		if err := h.store.DeleteObject(bucket, object.Key); err != nil {
+			response.Errors = append(response.Errors, deleteError{Key: object.Key, Code: "InternalError", Message: err.Error()})
+		} else if !quiet {
+			response.Deleted = append(response.Deleted, deletedObject{Key: object.Key})
+		}
+	}
+
+	writeXMLResponse(w, http.StatusOK, response)
 }
 
 func (h *Handler) handleHeadObject(w http.ResponseWriter, _ *http.Request, bucket, key string) {
