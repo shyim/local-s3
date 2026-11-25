@@ -2,6 +2,7 @@ package s3
 
 import (
 	"encoding/xml"
+	"errors"
 	"fmt"
 	"io"
 	"log"
@@ -356,12 +357,26 @@ func (h *Handler) handlePutObject(w http.ResponseWriter, r *http.Request, accoun
 		return
 	}
 
-	info, err := h.store.PutObject(bucket, key, r.Body)
+	// Decode aws-chunked bodies (used by the AWS CLI and SDKs when sending
+	// checksums) and validate any declared checksums before storing.
+	body := newPayloadReader(r)
+	info, err := h.store.PutObject(bucket, key, body)
 	if err != nil {
-		writeErrorResponse(w, http.StatusInternalServerError, "InternalError", err.Error())
+		switch {
+		case errors.Is(err, ErrBadDigest):
+			writeErrorResponse(w, http.StatusBadRequest, "BadDigest", err.Error())
+		case errors.Is(err, ErrIncompleteBody):
+			writeErrorResponse(w, http.StatusBadRequest, "IncompleteBody", err.Error())
+		default:
+			log.Printf("Error storing object %s/%s: %v", bucket, key, err)
+			writeErrorResponse(w, http.StatusInternalServerError, "InternalError", err.Error())
+		}
 		return
 	}
 
+	if algo, sum := body.ChecksumHeader(); algo != "" {
+		w.Header().Set("X-Amz-Checksum-"+algo, sum)
+	}
 	w.Header().Set("ETag", fmt.Sprintf("\"%s\"", info.ETag))
 	w.WriteHeader(http.StatusOK)
 }
