@@ -196,10 +196,16 @@ func (s *Storage) PutObject(bucket, key string, body io.Reader) (*ObjectInfo, er
 		return nil, err
 	}
 
-	f, err := os.Create(path)
+	// Keep uploads outside the bucket so listings only see committed objects.
+	uploadDir := filepath.Join(s.dataDir, ".uploads")
+	if err := os.MkdirAll(uploadDir, 0o700); err != nil {
+		return nil, err
+	}
+	f, err := os.CreateTemp(uploadDir, "put-*")
 	if err != nil {
 		return nil, err
 	}
+	defer os.Remove(f.Name())
 	defer f.Close()
 
 	h := md5.New()
@@ -209,14 +215,22 @@ func (s *Storage) PutObject(bucket, key string, body io.Reader) (*ObjectInfo, er
 		return nil, err
 	}
 
-	etag := hex.EncodeToString(h.Sum(nil))
-	info, _ := os.Stat(path)
+	info, err := f.Stat()
+	if err != nil {
+		return nil, err
+	}
+	if err := f.Close(); err != nil {
+		return nil, err
+	}
+	if err := os.Rename(f.Name(), path); err != nil {
+		return nil, err
+	}
 
 	return &ObjectInfo{
 		Key:          key,
 		Size:         size,
 		LastModified: info.ModTime(),
-		ETag:         etag,
+		ETag:         hex.EncodeToString(h.Sum(nil)),
 		ContentType:  detectContentType(key),
 	}, nil
 }

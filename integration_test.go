@@ -3,12 +3,16 @@ package main
 import (
 	"bytes"
 	"context"
+	"crypto/sha256"
+	"encoding/base64"
 	"errors"
+	"fmt"
 	"io"
 	"net"
 	"net/http"
 	"net/http/httptest"
 	"os"
+	"strconv"
 	"strings"
 	"testing"
 
@@ -161,6 +165,152 @@ func TestPutGetObject(t *testing.T) {
 	require.NoError(t, err)
 
 	assert.Equal(t, content, body)
+}
+
+// TestPutObjectAwsChunkedUpload reproduces the GitHub issue where the AWS CLI
+// (which sends uploads as aws-chunked with a checksum trailer) produced files
+// containing the raw chunk framing. The stored object must contain exactly the
+// uploaded bytes.
+func TestPutObjectAwsChunkedUpload(t *testing.T) {
+	store, err := storage.New(t.TempDir())
+	require.NoError(t, err)
+	require.NoError(t, store.EnsureBucket("test-bucket"))
+	handler := s3handler.NewHandler(store, nil)
+
+	content := "hi\n"               // echo "hi" > test.txt
+	const checksum = "JYwwIoi0PuE=" // CRC64NVME from issue #9
+
+	// Build the aws-chunked body the way the AWS CLI does:
+	// <hex-len>\r\n<data>\r\n0\r\n<checksum trailer>\r\n\r\n
+	var body strings.Builder
+	fmt.Fprintf(&body, "%x\r\n%s\r\n", len(content), content)
+	body.WriteString("0\r\n")
+	body.WriteString("x-amz-checksum-crc64nvme:" + checksum + "\r\n")
+	body.WriteString("\r\n")
+
+	req := httptest.NewRequest(http.MethodPut, "/test-bucket/test.txt", strings.NewReader(body.String()))
+	req.Header.Set("Content-Encoding", "aws-chunked")
+	req.Header.Set("X-Amz-Content-Sha256", "STREAMING-UNSIGNED-PAYLOAD-TRAILER")
+	req.Header.Set("X-Amz-Decoded-Content-Length", strconv.Itoa(len(content)))
+	req.Header.Set("X-Amz-Trailer", "x-amz-checksum-crc64nvme")
+
+	resp := httptest.NewRecorder()
+	handler.ServeHTTP(resp, req)
+	require.Equal(t, http.StatusOK, resp.Code, "response: %s", resp.Body.String())
+	assert.Equal(t, checksum, resp.Header().Get("X-Amz-Checksum-Crc64nvme"))
+
+	// The downloaded object must be exactly "hi\n" — no chunk framing, no trailer.
+	getResp := httptest.NewRecorder()
+	handler.ServeHTTP(getResp, httptest.NewRequest(http.MethodGet, "/test-bucket/test.txt", nil))
+	require.Equal(t, http.StatusOK, getResp.Code)
+	assert.Equal(t, content, getResp.Body.String())
+	assert.Equal(t, strconv.Itoa(len(content)), getResp.Header().Get("Content-Length"))
+}
+
+func TestPutObjectAwsChunkedMultiChunk(t *testing.T) {
+	store, err := storage.New(t.TempDir())
+	require.NoError(t, err)
+	require.NoError(t, store.EnsureBucket("test-bucket"))
+	handler := s3handler.NewHandler(store, nil)
+
+	chunks := []string{"hello", " ", "wor", "ld!"}
+	content := strings.Join(chunks, "")
+	sum := sha256.Sum256([]byte(content))
+
+	var body strings.Builder
+	for _, c := range chunks {
+		fmt.Fprintf(&body, "%x\r\n%s\r\n", len(c), c)
+	}
+	body.WriteString("0\r\nx-amz-checksum-sha256:" + base64.StdEncoding.EncodeToString(sum[:]) + "\r\n\r\n")
+
+	req := httptest.NewRequest(http.MethodPut, "/test-bucket/multi.txt", strings.NewReader(body.String()))
+	req.Header.Set("Content-Encoding", "aws-chunked")
+	req.Header.Set("X-Amz-Decoded-Content-Length", strconv.Itoa(len(content)))
+
+	resp := httptest.NewRecorder()
+	handler.ServeHTTP(resp, req)
+	require.Equal(t, http.StatusOK, resp.Code, "response: %s", resp.Body.String())
+
+	getResp := httptest.NewRecorder()
+	handler.ServeHTTP(getResp, httptest.NewRequest(http.MethodGet, "/test-bucket/multi.txt", nil))
+	require.Equal(t, http.StatusOK, getResp.Code)
+	assert.Equal(t, content, getResp.Body.String())
+}
+
+func TestPutObjectAwsChunkedBadChecksum(t *testing.T) {
+	store, err := storage.New(t.TempDir())
+	require.NoError(t, err)
+	require.NoError(t, store.EnsureBucket("test-bucket"))
+	handler := s3handler.NewHandler(store, nil)
+
+	content := "hi\n"
+	var body strings.Builder
+	fmt.Fprintf(&body, "%x\r\n%s\r\n", len(content), content)
+	body.WriteString("0\r\nx-amz-checksum-sha256:" + base64.StdEncoding.EncodeToString([]byte("bogus!!")) + "\r\n\r\n")
+
+	req := httptest.NewRequest(http.MethodPut, "/test-bucket/bad.txt", strings.NewReader(body.String()))
+	req.Header.Set("Content-Encoding", "aws-chunked")
+	req.Header.Set("X-Amz-Decoded-Content-Length", strconv.Itoa(len(content)))
+
+	resp := httptest.NewRecorder()
+	handler.ServeHTTP(resp, req)
+	assert.Equal(t, http.StatusBadRequest, resp.Code)
+	assert.Contains(t, resp.Body.String(), "BadDigest")
+
+	// The corrupt object must not have been stored.
+	getResp := httptest.NewRecorder()
+	handler.ServeHTTP(getResp, httptest.NewRequest(http.MethodGet, "/test-bucket/bad.txt", nil))
+	assert.Equal(t, http.StatusNotFound, getResp.Code)
+
+	const original = "original contents"
+	_, err = store.PutObject("test-bucket", "bad.txt", strings.NewReader(original))
+	require.NoError(t, err)
+	resp = httptest.NewRecorder()
+	retry := httptest.NewRequest(http.MethodPut, req.URL.Path, strings.NewReader(body.String()))
+	retry.Header = req.Header.Clone()
+	handler.ServeHTTP(resp, retry)
+	require.Equal(t, http.StatusBadRequest, resp.Code)
+
+	getResp = httptest.NewRecorder()
+	handler.ServeHTTP(getResp, httptest.NewRequest(http.MethodGet, req.URL.Path, nil))
+	require.Equal(t, http.StatusOK, getResp.Code)
+	assert.Equal(t, original, getResp.Body.String())
+}
+
+func TestPutObjectAwsChunkedRejectsInvalidDeclarations(t *testing.T) {
+	store, err := storage.New(t.TempDir())
+	require.NoError(t, err)
+	require.NoError(t, store.EnsureBucket("test-bucket"))
+	handler := s3handler.NewHandler(store, nil)
+
+	const checksum = "JYwwIoi0PuE="
+	const payload = "3\r\nhi\n\r\n0\r\n"
+	const checksumName = "x-amz-checksum-crc64nvme"
+	for _, tc := range []struct {
+		name, length, trailer, checksumHeader, code string
+	}{
+		{"missing trailer despite checksum header", "3", "", checksum, "BadDigest"},
+		{"conflicting header and trailer", "3", checksumName + ":" + checksum + "\r\n", "bogus", "BadDigest"},
+		{"conflicting duplicate trailers", "3", checksumName + ":" + checksum + "\r\n" + checksumName + ":bogus\r\n", "", "BadDigest"},
+		{"empty length", "", "", "", "IncompleteBody"},
+		{"malformed length", "abc", "", "", "IncompleteBody"},
+		{"negative length", "-1", "", "", "IncompleteBody"},
+		{"overflowing length", "9223372036854775808", "", "", "IncompleteBody"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			req := httptest.NewRequest(http.MethodPut, "/test-bucket/test.txt", strings.NewReader(payload+tc.trailer+"\r\n"))
+			req.Header.Set("Content-Encoding", "aws-chunked")
+			req.Header.Set("X-Amz-Decoded-Content-Length", tc.length)
+			req.Header.Set("X-Amz-Trailer", checksumName)
+			if tc.checksumHeader != "" {
+				req.Header.Set(checksumName, tc.checksumHeader)
+			}
+			resp := httptest.NewRecorder()
+			handler.ServeHTTP(resp, req)
+			assert.Equal(t, http.StatusBadRequest, resp.Code)
+			assert.Contains(t, resp.Body.String(), "<Code>"+tc.code+"</Code>")
+		})
+	}
 }
 
 func TestGetObjectMissingKey(t *testing.T) {
